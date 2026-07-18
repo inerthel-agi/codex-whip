@@ -208,7 +208,7 @@ internal static class Program
                     return cliCapture switch
                     {
                         { Kind: CliCaptureKind.Ready, Target: { } target } =>
-                            cliController.TrySteer(target, message),
+                            cliController.TrySteer(target, message, autoAttempt?.Token ?? default),
                         { Kind: CliCaptureKind.Ready } invalid =>
                             new SteerResult(
                                 false,
@@ -426,14 +426,15 @@ internal static class Program
         var soundSuccess = CrackSound.RunSelfTest(out var soundMessage);
         var localizationSuccess = AppLocalizer.RunSelfTest(out var localizationMessage);
         var cliSuccess = CodexCliController.RunSelfTest(out var cliMessage);
+        var desktopSuccess = CodexDesktopController.RunSelfTest(out var desktopMessage);
         var hotkeySuccess = HotkeyChoices.Select(choice => (choice.Modifiers, choice.VirtualKey)).Distinct().Count()
             == HotkeyChoices.Length;
         var hotkeyMessage = hotkeySuccess
             ? "PASS: configurable toggle hotkeys are valid and default to F8."
             : "FAIL: configurable toggle hotkeys are inconsistent.";
-        Console.WriteLine($"{gestureMessage} {soundMessage} {localizationMessage} {cliMessage} {hotkeyMessage}");
+        Console.WriteLine($"{gestureMessage} {soundMessage} {localizationMessage} {cliMessage} {desktopMessage} {hotkeyMessage}");
         Console.Out.Flush();
-        return gestureSuccess && soundSuccess && localizationSuccess && cliSuccess && hotkeySuccess ? 0 : 3;
+        return gestureSuccess && soundSuccess && localizationSuccess && cliSuccess && desktopSuccess && hotkeySuccess ? 0 : 3;
     }
 
     private static void EnsureWpfEnvironment()

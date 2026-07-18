@@ -171,8 +171,16 @@ internal sealed class CodexCliController
         return new CodexCliCapture(CliCaptureKind.None);
     }
 
-    public SteerResult TrySteer(CodexCliTarget target, string message)
+    public SteerResult TrySteer(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Failure("CLI_CANCELLED", "Automatic CLI steering was cancelled.", target.WindowHandle);
+        }
+
         if (!IsValidMessage(message))
         {
             return Failure("CLI_UNAVAILABLE", "The CLI steering message is invalid.", target.WindowHandle);
@@ -211,9 +219,11 @@ internal sealed class CodexCliController
             return Failure("CLI_CHANGED", "The Codex CLI target or screen changed.", target.WindowHandle);
         }
 
-        if (!SendUnicodeTextAndEnter(target, message))
+        if (!SendUnicodeTextAndEnter(target, message, cancellationToken))
         {
-            return Failure("CLI_SEND_INPUT_FAILED", "Windows refused the Codex CLI input.", target.WindowHandle);
+            return cancellationToken.IsCancellationRequested
+                ? Failure("CLI_CANCELLED", "Automatic CLI steering was cancelled.", target.WindowHandle)
+                : Failure("CLI_SEND_INPUT_FAILED", "Windows refused the Codex CLI input.", target.WindowHandle);
         }
 
         return new SteerResult(true, "STEERED", "The active Codex CLI turn was steered.", target.WindowHandle);
@@ -963,8 +973,16 @@ internal sealed class CodexCliController
             .Contains((uint)processId);
     }
 
-    private static bool SendUnicodeTextAndEnter(CodexCliTarget target, string message)
+    private static bool SendUnicodeTextAndEnter(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
         var inputs = new List<Input>(message.Length * 2);
         foreach (var character in message)
         {
@@ -978,8 +996,13 @@ internal sealed class CodexCliController
             return false;
         }
 
-        if (!WaitForExpectedDraft(target, message)
+        if (!WaitForExpectedDraft(target, message, cancellationToken)
             || !TryVerifyExpectedDraft(target, message))
+        {
+            return false;
+        }
+
+        if (cancellationToken.IsCancellationRequested)
         {
             return false;
         }
@@ -993,10 +1016,14 @@ internal sealed class CodexCliController
             && WaitForPendingSteerAndInterrupt(target, message);
     }
 
-    private static bool WaitForExpectedDraft(CodexCliTarget target, string message)
+    private static bool WaitForExpectedDraft(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken)
     {
         var timer = Stopwatch.StartNew();
-        while (timer.ElapsedMilliseconds < CliDraftConfirmationTimeoutMilliseconds)
+        while (!cancellationToken.IsCancellationRequested
+            && timer.ElapsedMilliseconds < CliDraftConfirmationTimeoutMilliseconds)
         {
             Thread.Sleep(CliDraftConfirmationPollMilliseconds);
             if (TryVerifyExpectedDraft(target, message))

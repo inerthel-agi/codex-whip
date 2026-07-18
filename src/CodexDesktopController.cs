@@ -110,7 +110,7 @@ internal sealed class CodexDesktopController
             var focused = AutomationElement.FocusedElement;
             if (focused is null
                 || focused.Current.ProcessId != target.ProcessId
-                || (!activateCodex && !IsDescendantOrSelf(focused, composer)))
+                || !IsDescendantOrSelf(focused, composer))
             {
                 return new SteerResult(
                     false,
@@ -119,8 +119,16 @@ internal sealed class CodexDesktopController
                     target.Handle);
             }
 
-            var currentText = ReadComposerText(composer);
-            if (!IsComposerEmpty(currentText))
+            if (!TryIsComposerEmpty(composer, out var isComposerEmpty))
+            {
+                return new SteerResult(
+                    false,
+                    "COMPOSER_UNREADABLE",
+                    "The Codex composer could not be read safely.",
+                    target.Handle);
+            }
+
+            if (!isComposerEmpty)
             {
                 return new SteerResult(
                     false,
@@ -137,13 +145,18 @@ internal sealed class CodexDesktopController
         bool inputSent;
         if (activateCodex)
         {
+            if (!IsComposerReadyForInput(target, composer))
+            {
+                return new SteerResult(false, "FOCUS_GUARD", "The Codex composer changed before sending.", target.Handle);
+            }
+
             inputSent = SendUnicodeTextAndEnter(message);
         }
         else
         {
             lock (cancellation!)
             {
-                if (cancellation.IsCancellationRequested || !ForegroundWindowBelongsTo(target.ProcessId))
+                if (cancellation.IsCancellationRequested || !IsComposerReadyForInput(target, composer))
                 {
                     return new SteerResult(false, "FOCUS_GUARD", "Automatic steering was cancelled before sending.", target.Handle);
                 }
@@ -211,8 +224,17 @@ internal sealed class CodexDesktopController
                 return false;
             }
 
-            var text = ReadComposerText(composer);
-            if (!IsComposerEmpty(text))
+            if (!TryIsComposerEmpty(composer, out var isComposerEmpty))
+            {
+                _lastLocateFailure = new SteerResult(
+                    false,
+                    "COMPOSER_UNREADABLE",
+                    "The Codex composer could not be read safely.",
+                    target.Handle);
+                return false;
+            }
+
+            if (!isComposerEmpty)
             {
                 _lastLocateFailure = new SteerResult(
                     false,
@@ -375,26 +397,76 @@ internal sealed class CodexDesktopController
         return bestMatch;
     }
 
-    private static string? ReadComposerText(AutomationElement composer)
+    private static bool TryIsComposerEmpty(AutomationElement composer, out bool isEmpty)
     {
+        isEmpty = false;
         if (!composer.TryGetCurrentPattern(TextPattern.Pattern, out var pattern)
             || pattern is not TextPattern textPattern)
         {
-            return null;
+            return false;
         }
 
-        return textPattern.DocumentRange.GetText(2048);
+        var text = textPattern.DocumentRange.GetText(2048);
+        isEmpty = IsEmptyComposerText(text, HasEmptyDocumentMarker(composer));
+        return true;
     }
 
-    private static bool IsComposerEmpty(string? text)
+    private static bool IsEmptyComposerText(string? text, bool hasEmptyDocumentMarker)
     {
+        if (text is null)
+        {
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(text))
         {
             return true;
         }
 
         var normalized = Regex.Replace(text, "\\s+", " ").Trim();
-        return EmptyComposerLabels.Any(label => normalized.Equals(label, StringComparison.OrdinalIgnoreCase));
+        var matchesPlaceholder = EmptyComposerLabels.Any(
+            label => normalized.Equals(label, StringComparison.OrdinalIgnoreCase));
+        return matchesPlaceholder && hasEmptyDocumentMarker;
+    }
+
+    private static bool HasEmptyDocumentMarker(AutomationElement composer) =>
+        composer.FindFirst(
+            TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.ClassNameProperty, "ProseMirror-trailingBreak")) is not null;
+
+    private static bool IsComposerReadyForInput(CodexTarget target, AutomationElement composer)
+    {
+        try
+        {
+            var focused = AutomationElement.FocusedElement;
+            return GetForegroundWindow() == target.Handle
+                && focused is not null
+                && focused.Current.ProcessId == target.ProcessId
+                && IsDescendantOrSelf(focused, composer)
+                && TryIsComposerEmpty(composer, out var isEmpty)
+                && isEmpty;
+        }
+        catch (ElementNotAvailableException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool RunSelfTest(out string message)
+    {
+        var success = !IsEmptyComposerText(null, false)
+            && IsEmptyComposerText("   ", false)
+            && IsEmptyComposerText("Do anything", true)
+            && !IsEmptyComposerText("Do anything", false)
+            && !IsEmptyComposerText("Real draft", true);
+        message = success
+            ? "PASS: Desktop composer state fails closed on placeholder collisions."
+            : "FAIL: Desktop composer state guards are inconsistent.";
+        return success;
     }
 
     private static bool IsDescendantOrSelf(AutomationElement element, AutomationElement ancestor)
