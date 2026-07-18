@@ -1,172 +1,186 @@
 # Codex Whip
 
-![Bannière Codex Whip](docs/assets/codex-whip-banner.png)
+![Codex Whip banner](docs/assets/codex-whip-banner.png)
 
-Un petit utilitaire Windows inspiré par
-[OpenWhip](https://github.com/GitFrog1111/OpenWhip) pour Codex
-Desktop et Codex CLI : un fouet apparaît au-dessus de l'écran et son claquement
-envoie une relance à la tâche Codex active.
+Codex Whip is a small Windows utility inspired by
+[OpenWhip](https://github.com/GitFrog1111/OpenWhip). It displays an interactive
+whip over Codex Desktop or Codex CLI and sends a short steering message when the
+whip cracks.
 
-Codex Whip fonctionne en arrière-plan depuis la zone de notification. Il ne
-modifie ni la configuration ni les sessions de Codex.
+The application runs in the Windows notification area. It does not modify Codex
+configuration, environment variables, or session files.
 
-Codex Whip est un projet communautaire indépendant. Il n'est ni affilié à
-OpenAI, ni approuvé par OpenAI.
+Codex Whip is an independent community project. It is not affiliated with or
+endorsed by OpenAI.
 
-[Télécharger la dernière version Windows](https://github.com/stealthsrc/codex-whip/releases/latest)
+[Download the latest Windows release](https://github.com/stealthsrc/codex-whip/releases/latest)
 
-## Démarrage rapide
+## Start using Codex Whip
 
-1. Ouvre Codex Desktop ou démarre Codex CLI dans PowerShell classique ou
-   l'invite de commandes.
-2. Lance `CodexWhip.exe`. Le fouet reste masqué au démarrage.
-3. Appuie sur `F8` pour afficher le fouet.
-4. Fais un aller-retour rapide avec la souris pour provoquer un claquement.
-5. Appuie de nouveau sur `F8` pour ranger le fouet.
+1. Open Codex Desktop, or start Codex CLI in classic PowerShell or Command
+   Prompt.
+2. Run `CodexWhip.exe`. The whip starts hidden.
+3. Press `F8` to show the whip.
+4. Move the pointer quickly in one direction and back to crack it.
+5. Press `F8` again to hide the whip.
 
-Pour Codex Desktop, règle **Settings > General > Follow-up behavior** sur
-**Steer**. Avec **Queue**, le message attendra la fin de la tâche en cours.
+For Codex Desktop, set **Settings > General > Follow-up behavior** to **Steer**.
+With **Queue**, the message waits until the current task finishes instead of
+redirecting it immediately.
 
-## Fonctionnement
+## Understand how it works
 
-- L'application reste dans la zone de notification Windows.
-- Un clic gauche sur l'icône affiche ou range le fouet.
-- `F8` affiche ou range le fouet depuis n'importe quelle application. Le
-  sous-menu **Whip shortcut** permet de choisir `F8`, `F9`, `F10` ou
-  `Ctrl+Alt+W` pour la session.
-- Le steering manuel prend en charge Codex Desktop et une session Codex CLI
-  officielle au premier plan dans PowerShell classique ou l'invite de commandes.
-- Le menu **Steering automatique** peut envoyer une relance toutes les 60
-  secondes lorsque Codex Desktop ou une console Codex CLI compatible est déjà
-  au premier plan. Il reste désactivé à chaque démarrage.
-- La force du fouet suit la vitesse de la souris : un mouvement lent reste
-  souple, tandis qu'un aller-retour assez rapide le fait claquer et envoie un
-  message de steering au travail en cours.
-- Les fichiers `sounds\whip_1.wav` à `sounds\whip_4.wav` correspondent aux
-  quatre niveaux de puissance et sont lisibles sans codec externe.
-- Le clic gauche dans l'overlay ne ferme plus le fouet.
+- A left-click on the notification icon shows or hides the whip.
+- `F8` is a global toggle. The **Whip shortcut** menu can switch it to `F9`,
+  `F10`, or `Ctrl+Alt+W` for the current session.
+- A slow or one-way pointer movement does not trigger a crack. A fast reversal
+  does, and movement speed controls one of four sound levels.
+- Manual steering supports Codex Desktop and one official Codex CLI session in
+  classic PowerShell or Command Prompt.
+- **Auto steering** attempts a steer every 60 seconds only while a compatible
+  Codex window is already in the foreground. It is disabled at every startup.
+- Clicking inside the overlay does not hide it.
 
-Codex Whip ne modifie ni `config.toml`, ni `CODEX_CLI_PATH`, ni les fichiers de
-session Codex. Il cible la fenêtre `ChatGPT.exe` installée par le package Windows
-officiel `OpenAI.Codex` ou une session officielle Codex CLI déjà ouverte.
+Codex Whip targets the `ChatGPT.exe` process installed by the official
+`OpenAI.Codex` Windows package or an already running official Codex CLI process.
 
-## Menu de la zone de notification
+## Use the notification menu
 
-- **Whip Codex** affiche ou range le fouet.
-- **Steering automatique** active une tentative de relance toutes les 60
-  secondes. L'option est désactivée à chaque démarrage.
-- **Whip shortcut** choisit `F8`, `F9`, `F10` ou `Ctrl+Alt+W`. Le choix vaut
-  pour la session actuelle ; `F8` redevient la valeur par défaut au redémarrage.
-- **Quitter** libère le raccourci global et ferme l'application.
+- **Whip Codex** shows or hides the whip.
+- **Auto steering** enables a steering attempt every 60 seconds.
+- **Whip shortcut** selects `F8`, `F9`, `F10`, or `Ctrl+Alt+W` for the current
+  session. `F8` is restored after a restart.
+- **Quit** releases the global shortcut and closes the application.
 
-Si un raccourci est déjà utilisé par une autre application, Codex Whip conserve
-le raccourci précédent et affiche un avertissement.
+If another application already owns a shortcut, Codex Whip keeps the previous
+shortcut and displays a warning.
 
-## Compatibilité Codex CLI V1
+## Use Codex CLI V1
 
-Le claquement manuel peut envoyer le message de steering à Codex CLI dans une
-console **PowerShell classique** ou **Invite de commandes**. Avant tout envoi,
-Codex Whip vérifie que la console est au premier plan, qu'une seule session
-Codex CLI officielle est présente, qu'un tour est actif et que le compositeur
-est vide, sans brouillon ni pièce jointe. Une sélection de console ou une touche
-de modification maintenue bloque aussi l'envoi. Si l'un de ces garde-fous ne
-peut pas être vérifié, aucun texte n'est envoyé.
+Manual steering supports Codex CLI in **classic PowerShell** and **Command
+Prompt**. Before sending input, Codex Whip verifies that:
 
-Après l'envoi, Codex Whip appuie sur `Esc` uniquement si l'aperçu exact du steer
-en attente est visible, afin de l'appliquer immédiatement. Windows Terminal, le
-terminal intégré de VS Code, Git Bash et WSL ne sont pas pris en charge en V1.
+- the console is in the foreground;
+- exactly one official Codex CLI session is present;
+- a turn is active;
+- the composer is empty, with no draft or attachment;
+- no console selection or modifier key can interfere with input.
 
-Le steering automatique n'ouvre pas Codex et ne lui vole pas le focus. Il
-effectue une tentative uniquement si Codex Desktop ou une console CLI compatible
-est déjà au premier plan, puis ignore silencieusement les situations à risque.
+If any guard cannot be verified, no text is sent. After insertion, Codex Whip
+presses `Esc` only when the exact pending steer preview is visible.
 
-## Langues
+Windows Terminal, the VS Code integrated terminal, Git Bash, and WSL are not
+supported in V1. Auto steering never opens Codex or steals focus; unsafe or
+unsupported situations are skipped silently.
 
-L'interface suit automatiquement la langue système. Dix-huit langues sont
-intégrées : anglais, français, espagnol, allemand, italien, portugais,
-néerlandais, polonais, russe, ukrainien, turc, arabe, hindi, indonésien,
-japonais, coréen, chinois simplifié et chinois traditionnel. Toute autre langue
-utilise l'anglais. Le message de steering reste volontairement court et en
-anglais universel.
+## Supported languages
 
-## Prérequis
+The interface follows the Windows display language. Eighteen languages are
+included: English, French, Spanish, German, Italian, Portuguese, Dutch, Polish,
+Russian, Ukrainian, Turkish, Arabic, Hindi, Indonesian, Japanese, Korean,
+Simplified Chinese, and Traditional Chinese.
 
-- Windows 10 ou Windows 11.
-- Codex Desktop ouvert ou une session Codex CLI active dans PowerShell classique
-  ou l'invite de commandes.
+Unsupported languages fall back to English. Steering messages intentionally use
+short, universal English instructions.
+
+## Requirements
+
+- Windows 10 or Windows 11.
 - .NET 8 Desktop Runtime.
-- Pour Codex Desktop : **Settings > General > Follow-up behavior > Steer**.
+- Codex Desktop, or Codex CLI in classic PowerShell or Command Prompt.
+- For Codex Desktop: **Settings > General > Follow-up behavior > Steer**.
 
-## Construire et lancer
+## Build and run the project
 
 ```powershell
 dotnet build -c Release
 dotnet run -c Release
 ```
 
-Pour lancer directement avec le fouet visible :
+Start with the whip visible:
 
 ```powershell
 dotnet run -c Release -- --show
 ```
 
-Pour publier l'exécutable framework-dependent :
+Publish a framework-dependent, single-file Windows executable:
 
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
 ```
 
-Le résultat est placé dans
-`bin\Release\net8.0-windows\win-x64\publish\CodexWhip.exe`. Les quatre sons WAV
-sont publiés à côté de l'exécutable dans le dossier `sounds`.
+The executable is written to
+`bin\Release\net8.0-windows\win-x64\publish\CodexWhip.exe`. Runtime WAV files
+are copied to the adjacent `sounds` directory.
 
-## Options de ligne de commande
+## Command-line options
 
-| Option        | Effet                                                                                                                    |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `--show`      | Lance l'application avec le fouet visible.                                                                               |
-| `--diagnose`  | Vérifie Codex Desktop et écrit un résultat JSON. Retourne `0` si l'intégration est prête, sinon `2`.                     |
-| `--self-test` | Teste le geste, les sons, les langues, les garde-fous CLI et les raccourcis. Retourne `0` en cas de réussite, sinon `3`. |
+| Option        | Behavior                                                                                                 |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `--show`      | Starts the application with the whip visible.                                                            |
+| `--diagnose`  | Checks Codex Desktop and writes JSON. Returns `0` when ready, or `2` on failure.                         |
+| `--self-test` | Tests gestures, sounds, languages, CLI guards, and shortcuts. Returns `0` on success, or `3` on failure. |
 
-Exemple de diagnostic :
+Run Desktop diagnostics:
 
 ```powershell
 dotnet run -c Release -- --diagnose
 ```
 
-## Tests
-
-Le détecteur de geste, les quatre niveaux sonores, les traductions et les
-garde-fous CLI possèdent un test déterministe :
+## Validate a change
 
 ```powershell
-dotnet run -c Release -- --self-test
+dotnet format CodexWhip.csproj --verify-no-changes --severity warn
+dotnet build CodexWhip.csproj -c Release
+dotnet run --project CodexWhip.csproj -c Release -- --self-test
 ```
 
-## Garde-fous
+The deterministic self-test covers gesture thresholds, all four sounds,
+localization bundles, Codex CLI guards, and global shortcut definitions.
 
-- Aucun texte n'est envoyé si la fenêtre officielle n'est pas reconnue.
-- Aucun texte n'est envoyé sans tâche active.
-- Aucun texte n'est envoyé si le focus n'appartient pas à Codex.
-- Un brouillon existant est toujours conservé et bloque le coup.
-- Pour Codex CLI, la console doit être au premier plan et une seule session
-  officielle avec un tour actif et un compositeur vide doit être vérifiable.
-- Deux messages ne peuvent pas être envoyés à moins de 1,4 seconde d'intervalle.
+## Safety guards
 
-## Résoudre les problèmes courants
+- Input is sent only to a verified official Codex process.
+- An active task must expose its **Stop** button.
+- Codex must own keyboard focus before input is sent.
+- An existing draft is preserved and blocks steering.
+- Codex CLI must expose one verifiable active turn with an empty composer.
+- Two messages cannot be sent less than 1.4 seconds apart.
 
-| Problème                    | Vérification                                                                                                         |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `F8` ne répond pas          | Choisis un autre raccourci dans **Whip shortcut** ; une autre application utilise peut-être `F8`.                    |
-| Le fouet bouge sans claquer | Fais un aller-retour plus rapide et marqué. Un mouvement lent ou dans une seule direction ne déclenche rien.         |
-| Aucun son n'est joué        | Vérifie que `sounds\whip_1.wav` à `sounds\whip_4.wav` se trouvent à côté de l'exécutable publié.                     |
-| Desktop ne reçoit rien      | Garde une tâche active avec le bouton **Stop**, vide le compositeur et sélectionne le mode **Steer**.                |
-| CLI ne reçoit rien          | Utilise PowerShell classique ou l'invite de commandes, garde un seul tour Codex actif et laisse le compositeur vide. |
-| Un message est bloqué       | Ferme toute sélection de console, relâche les touches de modification et attends la fin du délai anti-double envoi.  |
+## Troubleshoot common problems
 
-## Limite connue
+| Problem                           | Check                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `F8` does nothing                 | Select another key in **Whip shortcut**. Another application may own `F8`.                         |
+| The whip moves but does not crack | Make a faster, more deliberate back-and-forth movement. Slow or one-way movement is ignored.       |
+| No sound plays                    | Confirm that `sounds\whip_1.wav` through `sounds\whip_4.wav` are next to the published executable. |
+| Desktop receives no message       | Keep a task active with the **Stop** button visible, clear the composer, and select **Steer**.     |
+| CLI receives no message           | Use classic PowerShell or Command Prompt, keep one active Codex turn, and clear the composer.      |
+| Steering is blocked               | Clear console selection, release modifier keys, and wait for the anti-repeat cooldown.             |
 
-L'intégration Desktop utilise Windows UI Automation et simule une saisie clavier
-uniquement après ses vérifications. Une évolution importante de l'interface
-Codex Desktop peut nécessiter d'ajuster la détection du compositeur. La V1 CLI
-reste limitée aux consoles Windows classiques listées ci-dessus.
+## Repository layout
+
+```text
+assets/
+  icons/        Windows application icon
+  sounds/       Source MP3 and runtime WAV files
+docs/
+  adr/          Architecture decisions
+  assets/       README images
+src/            C# application source
+```
+
+Project metadata and community files remain at the repository root.
+
+## Known limitations
+
+The Desktop integration relies on Windows UI Automation and guarded keyboard
+input. A major Codex Desktop interface change may require an update to composer
+detection. Codex CLI V1 remains limited to the classic Windows consoles listed
+above.
+
+## License and contributions
+
+Codex Whip is available under the [MIT License](LICENSE). Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change, and report
+security issues according to [SECURITY.md](SECURITY.md).

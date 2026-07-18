@@ -9,17 +9,18 @@
     <StartupObject>CodexWhip.Program</StartupObject>
     <AssemblyName>CodexWhip</AssemblyName>
     <RootNamespace>CodexWhip</RootNamespace>
-    <ApplicationIcon>codex-whip.ico</ApplicationIcon>
+    <ApplicationIcon>assets\icons\codex-whip.ico</ApplicationIcon>
     <Version>0.1.0</Version>
     <Description>A desktop whip for steering an active Codex task.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Update="codex-whip.ico">
+    <None Update="assets\icons\codex-whip.ico">
+      <TargetPath>codex-whip.ico</TargetPath>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
-    <None Update="whip_*.wav">
+    <None Update="assets\sounds\whip_*.wav">
       <TargetPath>sounds\%(Filename)%(Extension)</TargetPath>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
