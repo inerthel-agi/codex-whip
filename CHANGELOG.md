@@ -2,6 +2,15 @@
 
 All notable changes to Codex Whip are documented in this file.
 
+## [0.1.1] - 2026-07-18
+
+### Security
+
+- Revalidate the exact Codex Desktop composer and foreground window immediately before keyboard input.
+- Fail closed when the Desktop composer cannot be read through UI Automation.
+- Distinguish rendered placeholders from real drafts with the ProseMirror empty-document marker.
+- Propagate automatic-steering cancellation through Codex CLI before text entry and submission.
+
 ## [0.1.0] - 2026-07-18
 
 ### Added
