@@ -22,7 +22,7 @@ endorsed by OpenAI.
 
 ## Install
 
-[Download the latest Windows release](https://github.com/stealthsrc/codex-whip/releases/latest),
+[Download the latest Windows release](https://github.com/inerthel-agi/codex-whip/releases/latest),
 or build from source:
 
 ```powershell
