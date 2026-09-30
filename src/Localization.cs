@@ -130,8 +130,8 @@ internal static class AppLocalizer
         "DRAFT_PRESENT" => Text(TextKey.DraftPresent),
         "NO_ACTIVE_TURN" => Text(TextKey.NoActiveTurn),
         "CODEX_NOT_FOUND" => Text(TextKey.CodexNotFound),
-        "FOCUS_FAILED" or "FOCUS_GUARD" => Text(TextKey.FocusFailed),
-        "COMPOSER_STALE" or "COMPOSER_NOT_FOUND" or "UI_CHANGED" or "SEND_INPUT_FAILED" => Text(TextKey.InterfaceChanged),
+        "FOCUS_FAILED" or "FOCUS_GUARD" or "FOCUS_NOT_GRANTED" or "COMPOSER_NOT_FOCUSED" => Text(TextKey.FocusFailed),
+        "COMPOSER_STALE" or "COMPOSER_NOT_FOUND" or "UI_CHANGED" or "TURN_CHANGED" or "SEND_INPUT_FAILED" or "STEER_ACTION_FAILED" => Text(TextKey.InterfaceChanged),
         "CLI_UNAVAILABLE" or "CLI_NOT_ACTIVE" or "CLI_DRAFT_PRESENT" or "CLI_CHANGED" or "CLI_SEND_INPUT_FAILED" => CliUnavailableMessage,
         _ => result.Message
     };

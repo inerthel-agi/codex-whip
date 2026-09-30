@@ -28,7 +28,24 @@ internal sealed record CodexCliCapture(
 
 internal sealed class CodexCliController
 {
+    private enum CliSubmitOutcome
+    {
+        Steered,
+        Cancelled,
+        Failed
+    }
+
+    private enum CliInterruptDecision
+    {
+        SendEscape,
+        Cancelled,
+        Reject
+    }
+
     private const string ClassicConsoleClass = "ConsoleWindowClass";
+    private const string TerminalHostClass = "CASCADIA_HOSTING_WINDOW_CLASS";
+    private const string PseudoConsoleClass = "PseudoConsoleWindow";
+    private const uint GetAncestorRootOwner = 3;
     private const string ActiveTurnMarker = " to interrupt)";
     private const string VimModeMarker = "Vim:";
     private const string PendingSteerHeader = "Messages to be submitted after next tool call";
@@ -39,6 +56,8 @@ internal sealed class CodexCliController
     private const int CliDraftConfirmationPollMilliseconds = 15;
     private const int CliSubmitConfirmationTimeoutMilliseconds = 750;
     private const int CliSubmitConfirmationPollMilliseconds = 15;
+    // Codex can take over a second to consume the pending steer under load.
+    private const int CliInterruptConfirmationTimeoutMilliseconds = 1500;
     private static readonly string[] EmptyComposerPlaceholders =
     [
         "Ask Codex to do anything",
@@ -118,9 +137,9 @@ internal sealed class CodexCliController
 
         var windowClass = GetWindowClass(foreground);
         var processName = GetWindowProcessName(foreground);
-        var isClassicConsole = IsClassicConsole(windowClass);
+        var isSupportedHost = IsSupportedConsoleHost(windowClass, processName);
         var isUnsupportedTerminal = IsUnsupportedTerminal(windowClass, processName);
-        if (!isClassicConsole && !isUnsupportedTerminal)
+        if (!isSupportedHost && !isUnsupportedTerminal)
         {
             return new CodexCliCapture(CliCaptureKind.None);
         }
@@ -135,7 +154,7 @@ internal sealed class CodexCliController
             QueueSignatureVerification(candidate.ExecutablePath);
         }
 
-        if (isClassicConsole)
+        if (isSupportedHost)
         {
             var matches = new List<CliProcessIdentity>();
             foreach (var candidate in candidates)
@@ -171,10 +190,56 @@ internal sealed class CodexCliController
         return new CodexCliCapture(CliCaptureKind.None);
     }
 
+    // Dry run for --diagnose-cli: reports what the foreground window resolves to
+    // and how the guards read its screen. Sends nothing.
+    public string DescribeForeground()
+    {
+        var capture = CaptureForeground();
+        if (capture.Kind != CliCaptureKind.Ready || capture.Target is not { } target)
+        {
+            return $"capture={capture.Kind}";
+        }
+
+        var host = TryGetAttachedConsoleWindow(target.ProcessId, out var hostWindow, out var hostProblem)
+            ? $"host={(hostWindow == target.WindowHandle ? "foreground" : "other")}"
+            : $"host-problem={hostProblem}";
+        var valid = TryValidateTarget(target, verifySignature: true, verifyConsole: true);
+        var failures = new Dictionary<string, int>(StringComparer.Ordinal);
+        var clock = Stopwatch.StartNew();
+        for (var index = 0; index < 40; index++)
+        {
+            if (!TryValidateTarget(target, verifySignature: false, verifyConsole: true))
+            {
+                var key = _lastValidationProblem ?? "unknown";
+                failures[key] = failures.GetValueOrDefault(key) + 1;
+            }
+        }
+
+        var repeat = $"repeat=40 avgMs={clock.ElapsedMilliseconds / 40.0:0.0} failures="
+            + (failures.Count == 0 ? "0" : string.Join(",", failures.Select(pair => $"{pair.Key}:{pair.Value}")));
+        var composerWidth = TryReadConsoleSnapshot(target.ProcessId, out var snapshot)
+            ? $"screen={AnalyzeScreen(snapshot)} width={snapshot.WindowRight - snapshot.WindowLeft + 1}"
+            : "screen=unreadable";
+        return $"capture=Ready {composerWidth} {host} valid={valid} {repeat} pid={target.ProcessId}";
+    }
+
     public SteerResult TrySteer(
         CodexCliTarget target,
         string message,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        TrySteerCore(target, message, cancellationToken, tryCommit: null);
+
+    internal SteerResult TrySteer(
+        CodexCliTarget target,
+        string message,
+        SteerAttempt attempt) =>
+        TrySteerCore(target, message, attempt.Token, attempt.TryCommit);
+
+    private SteerResult TrySteerCore(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken,
+        Func<bool>? tryCommit)
     {
         if (cancellationToken.IsCancellationRequested)
         {
@@ -188,7 +253,7 @@ internal sealed class CodexCliController
 
         if (!TryValidateTarget(target, verifySignature: true, verifyConsole: true))
         {
-            return Failure("CLI_CHANGED", "The Codex CLI target changed.", target.WindowHandle);
+            return Failure("CLI_CHANGED", "The Codex CLI target changed." + ValidationSuffix(), target.WindowHandle);
         }
 
         if (!TryReadConsoleSnapshot(target.ProcessId, out var before))
@@ -210,20 +275,46 @@ internal sealed class CodexCliController
             return Failure("CLI_UNAVAILABLE", "The Codex CLI composer is too narrow for safe steering.", target.WindowHandle);
         }
 
-        if (AnyInputModifierDown()
-            || !TryReadConsoleSnapshot(target.ProcessId, out var immediatelyBefore)
-            || !IsReadyForInjection(immediatelyBefore, message)
-            || !TryValidateTarget(target, verifySignature: false, verifyConsole: true)
-            || AnyInputModifierDown())
+        _lastValidationProblem = null;
+        if (AnyInputModifierDown())
         {
-            return Failure("CLI_CHANGED", "The Codex CLI target or screen changed.", target.WindowHandle);
+            return Failure("CLI_CHANGED", "The Codex CLI target or screen changed. [modifier]", target.WindowHandle);
         }
 
-        if (!SendUnicodeTextAndEnter(target, message, cancellationToken))
+        if (!TryReadConsoleSnapshot(target.ProcessId, out var immediatelyBefore)
+            || !IsReadyForInjection(immediatelyBefore, message))
         {
-            return cancellationToken.IsCancellationRequested
-                ? Failure("CLI_CANCELLED", "Automatic CLI steering was cancelled.", target.WindowHandle)
-                : Failure("CLI_SEND_INPUT_FAILED", "Windows refused the Codex CLI input.", target.WindowHandle);
+            return Failure("CLI_CHANGED", "The Codex CLI target or screen changed. [screen]", target.WindowHandle);
+        }
+
+        if (!TryValidateTarget(target, verifySignature: false, verifyConsole: true)
+            || AnyInputModifierDown())
+        {
+            return Failure(
+                "CLI_CHANGED",
+                "The Codex CLI target or screen changed." + (ValidationSuffix() is { Length: > 0 } suffix ? suffix : " [modifier]"),
+                target.WindowHandle);
+        }
+
+        var outcome = SendUnicodeTextAndEnter(
+            target,
+            message,
+            cancellationToken,
+            tryCommit);
+        if (outcome == CliSubmitOutcome.Cancelled)
+        {
+            return Failure(
+                "CLI_CANCELLED",
+                "Automatic CLI steering was cancelled.",
+                target.WindowHandle);
+        }
+
+        if (outcome == CliSubmitOutcome.Failed)
+        {
+            return Failure(
+                "CLI_SEND_INPUT_FAILED",
+                $"The CLI message could not be steered immediately. [{_lastSubmitStage}]{ValidationSuffix()}",
+                target.WindowHandle);
         }
 
         return new SteerResult(true, "STEERED", "The active Codex CLI turn was steered.", target.WindowHandle);
@@ -344,8 +435,15 @@ internal sealed class CodexCliController
         if (!IsExpectedOfficialPath(validPath)
             || IsExpectedOfficialPath(invalidPath)
             || !IsClassicConsole(ClassicConsoleClass)
-            || IsClassicConsole("CASCADIA_HOSTING_WINDOW_CLASS")
-            || !IsUnsupportedTerminal("CASCADIA_HOSTING_WINDOW_CLASS", "WindowsTerminal")
+            || IsClassicConsole(TerminalHostClass)
+            || !IsSupportedConsoleHost(TerminalHostClass, "WindowsTerminal")
+            || IsSupportedConsoleHost(TerminalHostClass, "explorer")
+            || IsUnsupportedTerminal(TerminalHostClass, "WindowsTerminal")
+            || StripSpinnerPrefix("⠋ Compter | me") != StripSpinnerPrefix("⠸ Compter | me")
+            || StripSpinnerPrefix("⠋ Compter | me") != "Compter | me"
+            || StripSpinnerPrefix("Compter | me") != "Compter | me"
+            || StripSpinnerPrefix("A Compter") != "A Compter"
+            || StripSpinnerPrefix("⠋ Other | me") == StripSpinnerPrefix("⠸ Compter | me")
             || !IsUnsupportedTerminal("Chrome_WidgetWin_1", "Code")
             || IsUnsupportedTerminal("CabinetWClass", "explorer")
             || readyScreens.Any(screen => AnalyzeScreen(screen) != CliScreenState.Ready)
@@ -364,6 +462,9 @@ internal sealed class CodexCliController
             || AnalyzeScreen(pendingSteerScreen) != CliScreenState.DraftPresent
             || !IsPendingSteerReadyForEscape(pendingSteerScreen, injectedMessage)
             || IsPendingSteerReadyForEscape(pendingSteerScreen, "Move faster.")
+            || IsPendingSteerConsumptionConfirmed(pendingSteerScreen, injectedMessage)
+            || !IsPendingSteerConsumptionConfirmed(readyScreen, injectedMessage)
+            || IsPendingSteerConsumptionConfirmed(draftScreen, injectedMessage)
             || !IsKnownEmptyComposerDisplay(readyScreen)
             || IsKnownEmptyComposerDisplay(draftScreen)
             || !IsExpectedComposerDraft(injectedDraftScreen, injectedMessage)
@@ -375,6 +476,18 @@ internal sealed class CodexCliController
             || CliDraftConfirmationTimeoutMilliseconds <= 60
             || CliDraftConfirmationPollMilliseconds <= 0
             || CliDraftConfirmationPollMilliseconds >= CliDraftConfirmationTimeoutMilliseconds
+            || ClassifyInterruptDecision(true, true, true, true, true)
+                != CliInterruptDecision.Cancelled
+            || ClassifyInterruptDecision(false, false, true, true, true)
+                != CliInterruptDecision.Reject
+            || ClassifyInterruptDecision(false, true, false, true, true)
+                != CliInterruptDecision.Reject
+            || ClassifyInterruptDecision(false, true, true, false, true)
+                != CliInterruptDecision.Reject
+            || ClassifyInterruptDecision(false, true, true, true, false)
+                != CliInterruptDecision.Reject
+            || ClassifyInterruptDecision(false, true, true, true, true)
+                != CliInterruptDecision.SendEscape
             || !IsValidMessage("Go faster.")
             || IsValidMessage("first line\nsecond line")
             || Marshal.SizeOf<Input>() != expectedInputSize)
@@ -517,6 +630,11 @@ internal sealed class CodexCliController
         var previews = context.Split('↳').Skip(1).Select(part => $"↳ {part.Trim()}").ToArray();
         return previews.Length == 1 && previews[0].Equals(expectedPreview, StringComparison.Ordinal);
     }
+
+    private static bool IsPendingSteerConsumptionConfirmed(
+        CliConsoleSnapshot snapshot,
+        string message) =>
+        IsReadyForInjection(snapshot, message);
 
     private static bool IsVerifiedEmptyComposer(
         CliConsoleSnapshot snapshot,
@@ -794,15 +912,41 @@ internal sealed class CodexCliController
         return enumerationComplete;
     }
 
+    // Reason for the last failed TryValidateTarget on this thread, for the log.
+    [ThreadStatic]
+    private static string? _lastValidationProblem;
+
+    [ThreadStatic]
+    private static string? _lastSubmitStage;
+
     private static bool TryValidateTarget(
         CodexCliTarget target,
         bool verifySignature,
         bool verifyConsole)
     {
+        _lastValidationProblem = null;
+        var valid = TryValidateTargetCore(target, verifySignature, verifyConsole);
+        _lastValidationProblem ??= valid ? null : "process";
+        return valid;
+    }
+
+    private static bool TryValidateTargetCore(
+        CodexCliTarget target,
+        bool verifySignature,
+        bool verifyConsole)
+    {
         if (target.WindowHandle == nint.Zero
-            || GetForegroundWindow() != target.WindowHandle
-            || !IsClassicConsole(GetWindowClass(target.WindowHandle)))
+            || GetForegroundWindow() != target.WindowHandle)
         {
+            _lastValidationProblem = "not-foreground";
+            return false;
+        }
+
+        if (!IsSupportedConsoleHost(
+                GetWindowClass(target.WindowHandle),
+                GetWindowProcessName(target.WindowHandle)))
+        {
+            _lastValidationProblem = "host-class";
             return false;
         }
 
@@ -828,19 +972,70 @@ internal sealed class CodexCliController
             return false;
         }
 
-        return !verifyConsole
-            || TryGetAttachedConsoleWindow(target.ProcessId, out var consoleWindow)
-                && consoleWindow == target.WindowHandle;
+        if (!verifyConsole)
+        {
+            return true;
+        }
+
+        if (!TryGetAttachedConsoleWindow(target.ProcessId, out var consoleWindow, out var consoleProblem))
+        {
+            _lastValidationProblem = "console:" + consoleProblem;
+            return false;
+        }
+
+        if (consoleWindow != target.WindowHandle)
+        {
+            _lastValidationProblem = "console-window";
+            return false;
+        }
+
+        return true;
     }
 
-    private static bool TryGetAttachedConsoleWindow(int processId, out nint windowHandle)
+    private static string ValidationSuffix() =>
+        _lastValidationProblem is { } problem ? $" [{problem}]" : string.Empty;
+
+    // Returns the top-level window that displays the process console. Under
+    // Windows Terminal the console is a hidden pseudo window owned by the terminal
+    // window, and the process must live in the single visible, selected tab.
+    private static bool TryGetAttachedConsoleWindow(int processId, out nint windowHandle) =>
+        TryGetAttachedConsoleWindow(processId, out windowHandle, out _);
+
+    // The terminal title can change for a moment (for example right after a
+    // steer), so a title mismatch is re-read a few times before failing.
+    private static bool TryGetAttachedConsoleWindow(
+        int processId,
+        out nint windowHandle,
+        out string problem)
     {
+        for (var attempt = 0; ; attempt++)
+        {
+            if (TryGetAttachedConsoleWindowOnce(processId, out windowHandle, out problem)
+                || problem != "title-mismatch"
+                || attempt >= 2)
+            {
+                return windowHandle != nint.Zero && problem.Length == 0;
+            }
+
+            Thread.Sleep(40);
+        }
+    }
+
+    private static bool TryGetAttachedConsoleWindowOnce(
+        int processId,
+        out nint windowHandle,
+        out string problem)
+    {
+        var isPseudoConsole = false;
+        var title = string.Empty;
+        problem = string.Empty;
         lock (ConsoleLock)
         {
             windowHandle = nint.Zero;
             FreeConsole();
             if (!AttachConsole((uint)processId))
             {
+                problem = "attach-failed";
                 return false;
             }
 
@@ -848,16 +1043,128 @@ internal sealed class CodexCliController
             {
                 if (!AttachedConsoleContains(processId))
                 {
+                    problem = "not-in-console";
                     return false;
                 }
 
-                windowHandle = GetConsoleWindow();
-                return windowHandle != nint.Zero;
+                var console = GetConsoleWindow();
+                if (console != nint.Zero
+                    && GetWindowClass(console) == PseudoConsoleClass)
+                {
+                    isPseudoConsole = true;
+                    windowHandle = GetAncestor(console, GetAncestorRootOwner);
+                    var titleBuffer = new StringBuilder(512);
+                    title = GetConsoleTitle(titleBuffer, (uint)titleBuffer.Capacity) > 0
+                        ? titleBuffer.ToString()
+                        : string.Empty;
+                }
+                else
+                {
+                    windowHandle = console;
+                }
             }
             finally
             {
                 FreeConsole();
             }
+        }
+
+        if (windowHandle == nint.Zero)
+        {
+            problem = "no-window";
+            return false;
+        }
+
+        if (isPseudoConsole)
+        {
+            problem = TerminalTabProblem(windowHandle, title);
+            if (problem.Length > 0)
+            {
+                windowHandle = nint.Zero;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Codex CLI animates a spinner glyph (Braille dots) in front of the title while
+    // a turn runs; the console title and the tab name are read a few milliseconds
+    // apart, so the glyph can differ between the two reads.
+    private static string StripSpinnerPrefix(string title) =>
+        title.Length >= 2
+        && title[1] == ' '
+        && (title[0] is >= '⠀' and <= '⣿' || "✳✶✻✽·•◐◓◑◒".Contains(title[0]))
+            ? title[2..]
+            : title;
+
+    // Typing goes to whichever tab and pane is active, so the console's own title
+    // must match the one selected tab, and that tab must show a single pane.
+    // Returns an empty string when the tab is valid, otherwise the reason.
+    private static string TerminalTabProblem(nint terminalWindow, string consoleTitle)
+    {
+        if (consoleTitle.Length == 0)
+        {
+            return "no-title";
+        }
+
+        if (!GetWindowProcessName(terminalWindow).Equals(
+                "WindowsTerminal",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return "not-windows-terminal";
+        }
+
+        try
+        {
+            var root = System.Windows.Automation.AutomationElement.FromHandle(terminalWindow);
+            var tabs = root.FindAll(
+                System.Windows.Automation.TreeScope.Descendants,
+                new System.Windows.Automation.PropertyCondition(
+                    System.Windows.Automation.AutomationElement.ControlTypeProperty,
+                    System.Windows.Automation.ControlType.TabItem));
+            var selectedNames = new List<string>();
+            for (var index = 0; index < tabs.Count; index++)
+            {
+                if (tabs[index].TryGetCurrentPattern(
+                        System.Windows.Automation.SelectionItemPattern.Pattern,
+                        out var pattern)
+                    && ((System.Windows.Automation.SelectionItemPattern)pattern).Current.IsSelected)
+                {
+                    selectedNames.Add(tabs[index].Current.Name);
+                }
+            }
+
+            if (selectedNames.Count != 1)
+            {
+                return $"selected-tabs={selectedNames.Count}";
+            }
+
+            if (!string.Equals(
+                    StripSpinnerPrefix(selectedNames[0]),
+                    StripSpinnerPrefix(consoleTitle),
+                    StringComparison.Ordinal))
+            {
+                return "title-mismatch";
+            }
+
+            var panes = root.FindAll(
+                System.Windows.Automation.TreeScope.Descendants,
+                new System.Windows.Automation.AndCondition(
+                    new System.Windows.Automation.PropertyCondition(
+                        System.Windows.Automation.AutomationElement.ClassNameProperty,
+                        "TermControl"),
+                    new System.Windows.Automation.PropertyCondition(
+                        System.Windows.Automation.AutomationElement.IsOffscreenProperty,
+                        false)));
+            return panes.Count == 1 ? string.Empty : $"visible-panes={panes.Count}";
+        }
+        catch (Exception exception) when (
+            exception is System.Windows.Automation.ElementNotAvailableException
+            or InvalidOperationException
+            or COMException)
+        {
+            return "uia-error";
         }
     }
 
@@ -973,14 +1280,15 @@ internal sealed class CodexCliController
             .Contains((uint)processId);
     }
 
-    private static bool SendUnicodeTextAndEnter(
+    private static CliSubmitOutcome SendUnicodeTextAndEnter(
         CodexCliTarget target,
         string message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<bool>? tryCommit)
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return false;
+            return CliSubmitOutcome.Cancelled;
         }
 
         var inputs = new List<Input>(message.Length * 2);
@@ -990,21 +1298,40 @@ internal sealed class CodexCliController
             inputs.Add(Input.Unicode(character, keyUp: true));
         }
 
-        var inputArray = inputs.ToArray();
-        if (SendInput((uint)inputArray.Length, inputArray, Marshal.SizeOf<Input>()) != inputArray.Length)
+        if (tryCommit is not null && !tryCommit())
         {
-            return false;
-        }
-
-        if (!WaitForExpectedDraft(target, message, cancellationToken)
-            || !TryVerifyExpectedDraft(target, message))
-        {
-            return false;
+            return CliSubmitOutcome.Cancelled;
         }
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return false;
+            return CliSubmitOutcome.Cancelled;
+        }
+
+        _lastSubmitStage = "type";
+        var inputArray = inputs.ToArray();
+        if (SendInput((uint)inputArray.Length, inputArray, Marshal.SizeOf<Input>()) != inputArray.Length)
+        {
+            return CliSubmitOutcome.Failed;
+        }
+
+        _lastSubmitStage = "draft";
+        if (WaitForExpectedDraft(target, message, cancellationToken))
+        {
+            _lastSubmitStage = "draft-recheck";
+        }
+
+        if (_lastSubmitStage != "draft-recheck"
+            || !TryVerifyExpectedDraft(target, message))
+        {
+            return cancellationToken.IsCancellationRequested
+                ? CliSubmitOutcome.Cancelled
+                : CliSubmitOutcome.Failed;
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CliSubmitOutcome.Cancelled;
         }
 
         Input[] enterInputs =
@@ -1012,8 +1339,17 @@ internal sealed class CodexCliController
             Input.VirtualKey(VirtualKeyReturn, keyUp: false),
             Input.VirtualKey(VirtualKeyReturn, keyUp: true)
         ];
-        return SendInput((uint)enterInputs.Length, enterInputs, Marshal.SizeOf<Input>()) == enterInputs.Length
-            && WaitForPendingSteerAndInterrupt(target, message);
+        _lastSubmitStage = "enter";
+        if (SendInput((uint)enterInputs.Length, enterInputs, Marshal.SizeOf<Input>()) != enterInputs.Length)
+        {
+            return CliSubmitOutcome.Failed;
+        }
+
+        _lastSubmitStage = "pending-preview";
+        return WaitForPendingSteerAndInterrupt(
+            target,
+            message,
+            cancellationToken);
     }
 
     private static bool WaitForExpectedDraft(
@@ -1035,13 +1371,25 @@ internal sealed class CodexCliController
         return false;
     }
 
-    private static bool WaitForPendingSteerAndInterrupt(CodexCliTarget target, string message)
+    private static CliSubmitOutcome WaitForPendingSteerAndInterrupt(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken)
     {
         var timer = Stopwatch.StartNew();
-        var emptySnapshots = 0;
         while (timer.ElapsedMilliseconds < CliSubmitConfirmationTimeoutMilliseconds)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return CliSubmitOutcome.Cancelled;
+            }
+
             Thread.Sleep(CliSubmitConfirmationPollMilliseconds);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return CliSubmitOutcome.Cancelled;
+            }
+
             if (!TryReadConsoleSnapshot(target.ProcessId, out var snapshot))
             {
                 continue;
@@ -1049,14 +1397,32 @@ internal sealed class CodexCliController
 
             if (IsPendingSteerReadyForEscape(snapshot, message))
             {
-                if (AnyInputModifierDown()
-                    || !TryValidateTarget(target, verifySignature: false, verifyConsole: true)
-                    || !TryReadConsoleSnapshot(target.ProcessId, out var immediatelyBeforeEscape)
-                    || !IsPendingSteerReadyForEscape(immediatelyBeforeEscape, message)
-                    || GetForegroundWindow() != target.WindowHandle
-                    || AnyInputModifierDown())
+                var modifiersClear = !AnyInputModifierDown();
+                var targetValid = TryValidateTarget(
+                    target,
+                    verifySignature: false,
+                    verifyConsole: true);
+                var previewStillExact = TryReadConsoleSnapshot(
+                        target.ProcessId,
+                        out var immediatelyBeforeEscape)
+                    && IsPendingSteerReadyForEscape(immediatelyBeforeEscape, message);
+                var foregroundMatches = GetForegroundWindow() == target.WindowHandle;
+                var decision = ClassifyInterruptDecision(
+                    cancellationToken.IsCancellationRequested,
+                    modifiersClear && !AnyInputModifierDown(),
+                    targetValid,
+                    previewStillExact,
+                    foregroundMatches);
+                if (decision == CliInterruptDecision.Cancelled)
                 {
-                    return true;
+                    return CliSubmitOutcome.Cancelled;
+                }
+
+                if (decision == CliInterruptDecision.Reject)
+                {
+                    _lastSubmitStage = $"escape-rejected(mod={modifiersClear},target={targetValid},"
+                        + $"preview={previewStillExact},fg={foregroundMatches})";
+                    return CliSubmitOutcome.Failed;
                 }
 
                 Input[] escapeInputs =
@@ -1064,17 +1430,96 @@ internal sealed class CodexCliController
                     Input.VirtualKey(VirtualKeyEscape, keyUp: false),
                     Input.VirtualKey(VirtualKeyEscape, keyUp: true)
                 ];
-                return SendInput((uint)escapeInputs.Length, escapeInputs, Marshal.SizeOf<Input>()) == escapeInputs.Length;
-            }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return CliSubmitOutcome.Cancelled;
+                }
 
-            emptySnapshots = IsKnownEmptyComposerDisplay(snapshot) ? emptySnapshots + 1 : 0;
-            if (emptySnapshots >= 2)
-            {
-                return true;
+                if (AnyInputModifierDown())
+                {
+                    return CliSubmitOutcome.Failed;
+                }
+
+                if (SendInput(
+                        (uint)escapeInputs.Length,
+                        escapeInputs,
+                        Marshal.SizeOf<Input>()) != escapeInputs.Length)
+                {
+                    return CliSubmitOutcome.Failed;
+                }
+
+                _lastSubmitStage = "escape-confirm";
+                return WaitForPendingSteerConsumption(
+                    target,
+                    message,
+                    cancellationToken);
             }
         }
 
-        return false;
+        return cancellationToken.IsCancellationRequested
+            ? CliSubmitOutcome.Cancelled
+            : CliSubmitOutcome.Failed;
+    }
+
+    private static CliSubmitOutcome WaitForPendingSteerConsumption(
+        CodexCliTarget target,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var timer = Stopwatch.StartNew();
+        var consecutiveAbsentObservations = 0;
+        while (timer.ElapsedMilliseconds < CliInterruptConfirmationTimeoutMilliseconds)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return CliSubmitOutcome.Cancelled;
+            }
+
+            Thread.Sleep(CliSubmitConfirmationPollMilliseconds);
+            if (!TryReadConsoleSnapshot(target.ProcessId, out var snapshot))
+            {
+                consecutiveAbsentObservations = 0;
+                continue;
+            }
+
+            if (!TryValidateTarget(target, verifySignature: false, verifyConsole: true)
+                || GetForegroundWindow() != target.WindowHandle
+                || !IsPendingSteerConsumptionConfirmed(snapshot, message))
+            {
+                consecutiveAbsentObservations = 0;
+                continue;
+            }
+
+            consecutiveAbsentObservations++;
+            if (consecutiveAbsentObservations >= 3)
+            {
+                return CliSubmitOutcome.Steered;
+            }
+        }
+
+        return cancellationToken.IsCancellationRequested
+            ? CliSubmitOutcome.Cancelled
+            : CliSubmitOutcome.Failed;
+    }
+
+    private static CliInterruptDecision ClassifyInterruptDecision(
+        bool cancelled,
+        bool modifiersClear,
+        bool targetValid,
+        bool previewStillExact,
+        bool foregroundMatches)
+    {
+        if (cancelled)
+        {
+            return CliInterruptDecision.Cancelled;
+        }
+
+        return modifiersClear
+            && targetValid
+            && previewStillExact
+            && foregroundMatches
+                ? CliInterruptDecision.SendEscape
+                : CliInterruptDecision.Reject;
     }
 
     private static bool TryVerifyExpectedDraft(CodexCliTarget target, string message) =>
@@ -1224,10 +1669,15 @@ internal sealed class CodexCliController
     private static bool IsClassicConsole(string windowClass) =>
         windowClass.Equals(ClassicConsoleClass, StringComparison.Ordinal);
 
+    private static bool IsWindowsTerminal(string windowClass, string processName) =>
+        windowClass.Equals(TerminalHostClass, StringComparison.Ordinal)
+        && processName.Equals("WindowsTerminal", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSupportedConsoleHost(string windowClass, string processName) =>
+        IsClassicConsole(windowClass) || IsWindowsTerminal(windowClass, processName);
+
     private static bool IsUnsupportedTerminal(string windowClass, string processName) =>
-        windowClass.Contains("CASCADIA", StringComparison.OrdinalIgnoreCase)
-        || processName.Equals("WindowsTerminal", StringComparison.OrdinalIgnoreCase)
-        || processName.Equals("Code", StringComparison.OrdinalIgnoreCase)
+        processName.Equals("Code", StringComparison.OrdinalIgnoreCase)
         || processName.Equals("Code - Insiders", StringComparison.OrdinalIgnoreCase)
         || processName.Equals("mintty", StringComparison.OrdinalIgnoreCase)
         || processName.Equals("wezterm-gui", StringComparison.OrdinalIgnoreCase)
@@ -1433,6 +1883,12 @@ internal sealed class CodexCliController
         internal uint ProviderFlags;
         internal uint UiContext;
     }
+
+    [DllImport("user32.dll")]
+    private static extern nint GetAncestor(nint windowHandle, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetConsoleTitle(StringBuilder title, uint size);
 
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();

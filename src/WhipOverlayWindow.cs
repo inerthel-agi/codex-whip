@@ -541,7 +541,7 @@ internal sealed class WhipSurface : FrameworkElement
 internal sealed class WhipGestureDetector
 {
     private const double SpawnGraceSeconds = 0.28;
-    private const double CooldownSeconds = 0.65;
+    private const double CooldownSeconds = 0.28;
     private const double ReversalWindowSeconds = 0.30;
     private const double TipForceThreshold = 18;
     private const double FastHandleSpeed = 10;
@@ -646,8 +646,7 @@ internal sealed class WhipGestureDetector
             return false;
         }
 
-        if (reversalDetector.Update(1.12, new Vector(20, 0), 20, out _)
-            || !reversalDetector.Update(1.22, new Vector(-20, 0), 20, out _))
+        if (!reversalDetector.Update(0.84, new Vector(20, 0), 20, out _))
         {
             message = "FAIL: cooldown blocked a deliberate repeated crack.";
             return false;
