@@ -12,8 +12,9 @@ All notable changes to Codex Whip are documented in this file.
 - Automatic steering no longer retries, scans, or logs every minute while Codex is idle in the foreground.
 - `Ctrl+C` typed in Codex no longer closes Codex Whip while it is briefly attached to the console.
 
-### Known issue
+### Known issues
 
+- Codex Desktop steering can fail during the first seconds of a turn. In one test, the first four strikes returned `UI_CHANGED` or `STEER_ACTION_FAILED` (the `Steer` button of the queued message was not found), then six strikes in a row succeeded. A failed strike may leave its message queued in Codex.
 - The 0.2.0 note that Codex Desktop is restored when minimized was not verified. A minimized Codex Desktop window is probably not detected, so no message is sent to it.
 
 ## [0.2.0] - 2026-09-30
