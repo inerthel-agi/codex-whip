@@ -370,13 +370,21 @@ internal sealed class CodexDesktopController
         }
         catch (Exception exception) when (IsExpectedAutomationException(exception))
         {
+            var code = ClassifyAutomationFailure(LastStage);
             return new SteerResult(
                 false,
-                "UI_CHANGED",
-                "The Codex interface changed during steering.",
+                code,
+                code == "UI_CHANGED"
+                    ? "The Codex interface changed during steering."
+                    : "The Codex interface changed after the message was typed.",
                 target.Handle);
         }
     }
+
+    // An automation error after text reached the composer must never be retried:
+    // the message may already be sent, and a retry would send it twice.
+    internal static string ClassifyAutomationFailure(string stage) =>
+        stage is "type" or "confirm" ? "STEER_ACTION_FAILED" : "UI_CHANGED";
 
     private bool TryRelocateActiveComposer(
         nint expectedWindowHandle,
@@ -1084,7 +1092,12 @@ internal sealed class CodexDesktopController
         var rootBounds = new System.Windows.Rect(188, 392, 1280, 743);
         var stopBounds = new System.Windows.Rect(1297, 1083, 29, 28);
         var steerBounds = new System.Windows.Rect(1186, 990, 66, 24);
-        var success = !IsEmptyComposerText(null, false)
+        var success = ClassifyAutomationFailure("type") == "STEER_ACTION_FAILED"
+            && ClassifyAutomationFailure("confirm") == "STEER_ACTION_FAILED"
+            && ClassifyAutomationFailure("locate") == "UI_CHANGED"
+            && ClassifyAutomationFailure("focus") == "UI_CHANGED"
+            && ClassifyAutomationFailure("guard") == "UI_CHANGED"
+            && !IsEmptyComposerText(null, false)
             && IsEmptyComposerText("   ", false)
             && IsEmptyComposerText("Do anything", true)
             && !IsEmptyComposerText("Do anything", false)
