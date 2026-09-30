@@ -42,6 +42,10 @@ internal static class Program
     {
         EnsureWpfEnvironment();
 
+        // Steering briefly attaches this process to Codex CLI consoles. Without this,
+        // a Ctrl+C typed in Codex during an attach would also terminate Codex Whip.
+        _ = SetConsoleCtrlHandler(nint.Zero, add: true);
+
         if (args.Any(arg => arg.Equals("--self-test", StringComparison.OrdinalIgnoreCase)))
         {
             return RunGestureSelfTest();
@@ -275,14 +279,18 @@ internal static class Program
             {
                 var clock = Stopwatch.StartNew();
                 var result = SendMessage();
-                if (result.Code != "NOT_FOREGROUND")
+                var isAuto = request.Kind == PendingSteerKind.Automatic;
+
+                // An idle Codex in front would otherwise log and scan every minute.
+                if (result.Code != "NOT_FOREGROUND"
+                    && !(isAuto && result.Code == "NO_ACTIVE_TURN"))
                 {
                     var viaCli = capture.Kind == CliCaptureKind.Ready;
                     var line = $"{(request.Kind == PendingSteerKind.Automatic ? "auto" : "manual")} "
                         + $"try={tryNumber} target={(viaCli ? "cli" : "desktop")} code={result.Code} "
                         + $"stage={(viaCli ? "cli" : controller.LastStage)} ms={clock.ElapsedMilliseconds}"
                         + (result.Success ? string.Empty : $" msg=\"{result.Message}\"");
-                    SteerLog.Write(result.Success || viaCli
+                    SteerLog.Write(result.Success || viaCli || result.Code == "NO_ACTIVE_TURN"
                         ? line
                         : $"{line} snapshot: {controller.DescribeSnapshot()}");
                 }
@@ -330,18 +338,17 @@ internal static class Program
                 return;
             }
 
+            autoPostInputFailures = NextPostInputFailureCount(autoPostInputFailures, result);
             if (result.Success)
             {
                 autoRetryCount = 0;
-                autoPostInputFailures = 0;
                 ScheduleAuto(AutoSteeringInterval);
                 return;
             }
 
             // Text was typed but delivery failed: repeating every minute could pile
             // up unsent messages in Codex, so stop and tell the user.
-            if (IsPostInputFailure(result.Code)
-                && ++autoPostInputFailures >= MaxAutoPostInputFailures)
+            if (autoPostInputFailures >= MaxAutoPostInputFailures)
             {
                 autoPostInputFailures = 0;
                 autoRetryCount = 0;
@@ -355,7 +362,7 @@ internal static class Program
                 return;
             }
 
-            if (IsTransientFailure(result.Code) && autoRetryCount < MaxAutoRetries)
+            if (ShouldRetry(result) && autoRetryCount < MaxAutoRetries)
             {
                 ScheduleAuto(AutoRetryDelays[autoRetryCount]);
                 autoRetryCount++;
@@ -420,17 +427,22 @@ internal static class Program
                             activeAttempt = attempt;
                             result = await SendRequestAsync(request, attempt, ++tryNumber);
                             activeAttempt = null;
-                            if (request.Kind != PendingSteerKind.Manual
-                                || result.Success
-                                || !IsTransientFailure(result.Code)
-                                || result.Code == "NO_ACTIVE_TURN"
-                                || tryNumber > MaxAutoRetries
-                                || shuttingDown)
+                            if (!ShouldRetryManual(
+                                    request.Kind == PendingSteerKind.Manual,
+                                    result,
+                                    tryNumber,
+                                    shuttingDown))
                             {
                                 break;
                             }
 
                             await Task.Delay(AutoRetryDelays[tryNumber - 1]);
+
+                            // Quit may have been chosen during the wait; never type after it.
+                            if (shuttingDown)
+                            {
+                                break;
+                            }
                         }
                     }
                     catch (Exception exception)
@@ -621,15 +633,34 @@ internal static class Program
     private static bool IsPostInputFailure(string code) =>
         code is "SEND_INPUT_FAILED"
             or "STEER_ACTION_FAILED"
-            or "SEND_NOT_ACCEPTED"
-            or "UNCONFIRMED";
+            or "CLI_SEND_INPUT_FAILED";
+
+    // Consecutive post-input failures: any other outcome resets the count.
+    private static int NextPostInputFailureCount(int count, SteerResult result) =>
+        !result.Success && IsPostInputFailure(result.Code) ? count + 1 : 0;
+
+    // An idle Codex (no active turn) is not worth retrying: the warm-up wait in
+    // the Desktop locator already covers a tree that is still being built.
+    private static bool ShouldRetry(SteerResult result) =>
+        !result.Success
+        && result.Code != "NO_ACTIVE_TURN"
+        && IsTransientFailure(result.Code);
+
+    private static bool ShouldRetryManual(
+        bool isManual,
+        SteerResult result,
+        int tryNumber,
+        bool shuttingDown) =>
+        isManual
+        && !shuttingDown
+        && tryNumber <= MaxAutoRetries
+        && ShouldRetry(result);
 
     // Failures that happen before any text is typed and may clear on their own.
     private static bool IsTransientFailure(string code) =>
         code is "COMPOSER_NOT_FOUND"
             or "COMPOSER_STALE"
             or "NO_ACTIVE_TURN"
-            or "FOCUS_GUARD"
             or "FOCUS_FAILED"
             or "FOCUS_NOT_GRANTED"
             or "COMPOSER_NOT_FOCUSED"
@@ -723,8 +754,25 @@ internal static class Program
             ? "PASS: configurable toggle hotkeys are valid and default to F8."
             : "FAIL: configurable toggle hotkeys are inconsistent.";
         var logSuccess = SteerLog.RunSelfTest(out var logMessage);
-        var retrySuccess = IsTransientFailure("FOCUS_GUARD")
-            && IsTransientFailure("CLI_CHANGED")
+        var failed = (string code) => new SteerResult(false, code, code);
+        var stable = new SteerResult(true, "STEERED", "ok");
+        var retrySuccess = IsTransientFailure("CLI_CHANGED")
+            && ShouldRetryManual(true, failed("FOCUS_NOT_GRANTED"), 1, shuttingDown: false)
+            && ShouldRetryManual(true, failed("FOCUS_NOT_GRANTED"), MaxAutoRetries, shuttingDown: false)
+            && !ShouldRetryManual(true, failed("FOCUS_NOT_GRANTED"), MaxAutoRetries + 1, shuttingDown: false)
+            && !ShouldRetryManual(true, failed("FOCUS_NOT_GRANTED"), 1, shuttingDown: true)
+            && !ShouldRetryManual(false, failed("FOCUS_NOT_GRANTED"), 1, shuttingDown: false)
+            && !ShouldRetryManual(true, failed("NO_ACTIVE_TURN"), 1, shuttingDown: false)
+            && !ShouldRetryManual(true, failed("STEER_ACTION_FAILED"), 1, shuttingDown: false)
+            && !ShouldRetryManual(true, failed("CLI_SEND_INPUT_FAILED"), 1, shuttingDown: false)
+            && !ShouldRetryManual(true, stable, 1, shuttingDown: false)
+            && ShouldRetry(failed("UI_CHANGED"))
+            && !ShouldRetry(failed("NO_ACTIVE_TURN"))
+            && IsPostInputFailure("CLI_SEND_INPUT_FAILED")
+            && NextPostInputFailureCount(0, failed("CLI_SEND_INPUT_FAILED")) == 1
+            && NextPostInputFailureCount(2, failed("STEER_ACTION_FAILED")) == 3
+            && NextPostInputFailureCount(2, failed("NOT_FOREGROUND")) == 0
+            && NextPostInputFailureCount(2, stable) == 0
             && IsTransientFailure("FOCUS_NOT_GRANTED")
             && IsTransientFailure("COMPOSER_NOT_FOCUSED")
             && IsTransientFailure("MODIFIER_HELD")
@@ -738,7 +786,8 @@ internal static class Program
             && IsPostInputFailure("STEER_ACTION_FAILED")
             && IsPostInputFailure("SEND_INPUT_FAILED")
             && !IsPostInputFailure("FOCUS_NOT_GRANTED")
-            && !IsPostInputFailure("NO_ACTIVE_TURN");
+            && !IsPostInputFailure("NO_ACTIVE_TURN")
+            && !IsPostInputFailure("UI_CHANGED");
         var retryMessage = retrySuccess
             ? "PASS: retries are limited to failures that occur before any text is typed."
             : "FAIL: retry guards are inconsistent.";
@@ -853,6 +902,9 @@ internal static class Program
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(nint handlerRoutine, bool add);
 
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();

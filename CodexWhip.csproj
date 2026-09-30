@@ -10,7 +10,7 @@
     <AssemblyName>CodexWhip</AssemblyName>
     <RootNamespace>CodexWhip</RootNamespace>
     <ApplicationIcon>assets\icons\codex-whip.ico</ApplicationIcon>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Description>A desktop whip for steering an active Codex task.</Description>
   </PropertyGroup>
 

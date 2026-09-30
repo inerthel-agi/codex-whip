@@ -2,6 +2,20 @@
 
 All notable changes to Codex Whip are documented in this file.
 
+## [0.2.1] - 2026-09-30
+
+### Fixed
+
+- A Codex Desktop automation error after the message was typed is no longer reported as `UI_CHANGED`. It is now `STEER_ACTION_FAILED` and is never retried, so a message cannot be sent twice.
+- Choosing Quit during the wait between two retries no longer sends another message.
+- The automatic-steering pause now also covers Codex CLI (`CLI_SEND_INPUT_FAILED`), and counts consecutive failures instead of cumulative ones.
+- Automatic steering no longer retries, scans, or logs every minute while Codex is idle in the foreground.
+- `Ctrl+C` typed in Codex no longer closes Codex Whip while it is briefly attached to the console.
+
+### Known issue
+
+- The 0.2.0 note that Codex Desktop is restored when minimized was not verified. A minimized Codex Desktop window is probably not detected, so no message is sent to it.
+
 ## [0.2.0] - 2026-09-30
 
 ### Added
